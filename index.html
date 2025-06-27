@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CORS Misconfiguration Tester</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f4f4;
+            margin: 0;
+            padding: 0;
+        }
+
+        .container {
+            max-width: 700px;
+            margin: 40px auto;
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            padding: 32px 24px 24px 24px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+
+        label,
+        select,
+        input,
+        textarea {
+            display: block;
+            width: 100%;
+            margin-bottom: 16px;
+        }
+
+        button {
+            background: #0078d7;
+            color: #fff;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        button:disabled {
+            background: #aaa;
+        }
+
+        .result {
+            margin-top: 24px;
+            padding: 16px;
+            background: #f9f9f9;
+            border-radius: 4px;
+            font-size: 0.95rem;
+            word-break: break-all;
+        }
+
+        .success {
+            color: green;
+        }
+
+        .fail {
+            color: red;
+        }
+
+        .pending {
+            color: #888;
+        }
+
+        .method-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .method-list label {
+            width: auto;
+            margin-bottom: 0;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>CORS Misconfiguration Tester</h1>
+        <form id="corsForm">
+            <label for="url">Target URL:</label>
+            <input type="url" id="url" name="url" placeholder="https://target-site.com/api" required>
+
+            <label>HTTP Methods to Test:</label>
+            <div class="method-list">
+                <label><input type="checkbox" name="methods" value="GET" checked> GET</label>
+                <label><input type="checkbox" name="methods" value="POST" checked> POST</label>
+                <label><input type="checkbox" name="methods" value="PUT"> PUT</label>
+                <label><input type="checkbox" name="methods" value="DELETE"> DELETE</label>
+                <label><input type="checkbox" name="methods" value="PATCH"> PATCH</label>
+                <label><input type="checkbox" name="methods" value="OPTIONS"> OPTIONS</label>
+                <label><input type="checkbox" name="methods" value="HEAD"> HEAD</label>
+            </div>
+
+            <label for="headers">Custom Headers (JSON):</label>
+            <textarea id="headers" name="headers" rows="2" placeholder='{"X-Test": "value"}'></textarea>
+
+            <label for="body">Request Body (for POST/PUT/PATCH):</label>
+            <textarea id="body" name="body" rows="2" placeholder='{"key": "value"}'></textarea>
+
+            <button type="submit">Test CORS</button>
+        </form>
+        <div id="results"></div>
+    </div>
+    <script>
+        const corsForm = document.getElementById('corsForm');
+        const resultsDiv = document.getElementById('results');
+
+        function escapeHTML(str) {
+            return str.replace(/[&<>"']/g, function (tag) {
+                const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' };
+                return chars[tag] || tag;
+            });
+        }
+
+        corsForm.addEventListener('submit', async function (e) {
+            e.preventDefault();
+            resultsDiv.innerHTML = '';
+            const url = document.getElementById('url').value.trim();
+            const methods = Array.from(document.querySelectorAll('input[name="methods"]:checked')).map(cb => cb.value);
+            let headers = {};
+            let body = document.getElementById('body').value.trim();
+            try {
+                headers = document.getElementById('headers').value.trim() ? JSON.parse(document.getElementById('headers').value) : {};
+            } catch (err) {
+                resultsDiv.innerHTML = '<div class="fail">Invalid JSON in headers</div>';
+                return;
+            }
+            if (!url) {
+                resultsDiv.innerHTML = '<div class="fail">Please enter a valid URL.</div>';
+                return;
+            }
+            for (const method of methods) {
+                const resultId = 'result-' + method;
+                const resultElem = document.createElement('div');
+                resultElem.className = 'result pending';
+                resultElem.id = resultId;
+                resultElem.innerHTML = `<b>${method}</b>: Testing...`;
+                resultsDiv.appendChild(resultElem);
+                testCORS(url, method, headers, body, resultElem);
+            }
+        });
+
+        async function testCORS(url, method, headers, body, resultElem) {
+            let options = {
+                method,
+                headers: { ...headers },
+                mode: 'cors',
+                credentials: 'include', // test with credentials
+            };
+            if (["POST", "PUT", "PATCH"].includes(method) && body) {
+                try {
+                    options.body = JSON.stringify(JSON.parse(body));
+                    if (!options.headers['Content-Type']) {
+                        options.headers['Content-Type'] = 'application/json';
+                    }
+                } catch (e) {
+                    options.body = body;
+                }
+            }
+            // Preflight test for non-simple requests
+            if (["PUT", "DELETE", "PATCH"].includes(method) || Object.keys(headers).length > 0) {
+                await preflightCORS(url, method, headers, resultElem);
+            }
+            try {
+                const resp = await fetch(url, options);
+                let text = await resp.text();
+                let details = `<br>Status: <b>${resp.status}</b><br>`;
+                details += `CORS Headers: <pre>${escapeHTML(JSON.stringify({
+                    'Access-Control-Allow-Origin': resp.headers.get('Access-Control-Allow-Origin'),
+                    'Access-Control-Allow-Credentials': resp.headers.get('Access-Control-Allow-Credentials'),
+                    'Access-Control-Allow-Methods': resp.headers.get('Access-Control-Allow-Methods'),
+                    'Access-Control-Allow-Headers': resp.headers.get('Access-Control-Allow-Headers'),
+                }, null, 2))}</pre>`;
+                details += `<details><summary>Response Body</summary><pre>${escapeHTML(text.slice(0, 1000))}</pre></details>`;
+                resultElem.className = 'result success';
+                resultElem.innerHTML = `<b>${method}</b>: <span class="success">Success</span>${details}`;
+            } catch (err) {
+                resultElem.className = 'result fail';
+                resultElem.innerHTML = `<b>${method}</b>: <span class="fail">Failed</span><br>Error: ${escapeHTML(err.message)}`;
+            }
+        }
+
+        async function preflightCORS(url, method, headers, resultElem) {
+            try {
+                const resp = await fetch(url, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Origin': location.origin,
+                        'Access-Control-Request-Method': method,
+                        'Access-Control-Request-Headers': Object.keys(headers).join(', ')
+                    },
+                    mode: 'cors',
+                    credentials: 'include',
+                });
+                let details = `<br>Preflight Status: <b>${resp.status}</b><br>`;
+                details += `Preflight CORS Headers: <pre>${escapeHTML(JSON.stringify({
+                    'Access-Control-Allow-Origin': resp.headers.get('Access-Control-Allow-Origin'),
+                    'Access-Control-Allow-Credentials': resp.headers.get('Access-Control-Allow-Credentials'),
+                    'Access-Control-Allow-Methods': resp.headers.get('Access-Control-Allow-Methods'),
+                    'Access-Control-Allow-Headers': resp.headers.get('Access-Control-Allow-Headers'),
+                }, null, 2))}</pre>`;
+                resultElem.innerHTML += details;
+            } catch (err) {
+                resultElem.innerHTML += `<br>Preflight <span class="fail">Failed</span>: ${escapeHTML(err.message)}`;
+            }
+        }
+    </script>
+</body>
+
+</html>
